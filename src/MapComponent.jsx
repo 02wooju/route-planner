@@ -4,7 +4,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
-// --- Icon Fix (Standard Leaflet Hack) ---
+// --- Icon Fix ---
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({
@@ -14,7 +14,6 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// --- Helper Component to Recenter Map on Location Change ---
 function RecenterMap({ center }) {
   const map = useMap();
   useEffect(() => {
@@ -24,264 +23,214 @@ function RecenterMap({ center }) {
 }
 
 const MapComponent = () => {
-  // State for user location, route data, and UI controls
   const [position, setPosition] = useState(null); 
   const [routeCoordinates, setRouteCoordinates] = useState([]);
-  
-  // New State: Distance Slider (default 5km) and Route Stats
-  const [distance, setDistance] = useState(5); 
   const [routeStats, setRouteStats] = useState(null);
+  const [distance, setDistance] = useState(5); 
+
+  // Chat State
+  const [chatInput, setChatInput] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const [aiMessage, setAiMessage] = useState("Tell me what run you want!");
 
   // ---------------------------------------------------------
-  // 🔽 YOUR API KEY IS PRE-FILLED HERE 🔽
+  // 🔑 API KEYS
   // ---------------------------------------------------------
-  const API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
+  const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
+  
+  // PASTE YOUR OPENAI KEY HERE (Starts with 'sk-...')
+  const OPENAI_KEY = "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"; 
+  // ---------------------------------------------------------
 
-  // 1. Get User Location on Load
   useEffect(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          const { latitude, longitude } = pos.coords;
-          setPosition([latitude, longitude]);
-        },
-        (err) => console.error("Error getting location:", err)
+        (pos) => setPosition([pos.coords.latitude, pos.coords.longitude]),
+        (err) => console.error(err)
       );
     }
   }, []);
 
-  // --- New Helper: Calculate Distance from Coordinates (The Fallback) ---
-  const calculateStatsFromCoords = (coords) => {
-    let totalDistMeters = 0;
-    for (let i = 0; i < coords.length - 1; i++) {
-      const p1 = L.latLng(coords[i][0], coords[i][1]);
-      const p2 = L.latLng(coords[i+1][0], coords[i+1][1]);
-      totalDistMeters += p1.distanceTo(p2);
-    }
-    
-    // Assume walking/hiking speed approx 5km/h (83 meters/min)
-    const durationMins = Math.round(totalDistMeters / 83);
-    
-    return {
-      distance: (totalDistMeters / 1000).toFixed(2),
-      duration: durationMins
-    };
-  };
+  // --- THE BRAIN: OpenAI (ChatGPT) Connector ---
+  const handleChatSubmit = async () => {
+    if (!chatInput.trim()) return;
+    setIsThinking(true);
+    setAiMessage("Thinking...");
 
-  // 2. Generate Route Logic (Updated)
-  const generateRoute = async () => {
-    if (!position || !API_KEY) {
-        alert("Please wait for location or check your API Key.");
+    if (!OPENAI_KEY.startsWith("sk-")) {
+        setAiMessage("Error: Key must start with 'sk-'");
+        setIsThinking(false);
         return;
     }
 
-    const seed = Math.floor(Math.random() * 10000);
-    const startPoint = [position[1], position[0]]; 
-    const targetDistance = distance * 1000; 
-
-    const url = 'https://api.openrouteservice.org/v2/directions/foot-hiking/geojson';
-
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': API_KEY.trim(),
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          coordinates: [startPoint],
-          options: {
-            round_trip: {
-              length: targetDistance,
-              points: 3, 
-              seed: seed 
-            }
-          }
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        alert(`Error: ${data.error ? JSON.stringify(data.error) : "Unknown Error"}`);
-        return;
+    const systemPrompt = `
+      You are a running route API. Extract parameters from the user's request into valid JSON.
+      
+      Output Format:
+      { 
+        "distance_km": number (default 5), 
+        "destination_name": string or null, 
+        "preference": "road" or "trail" (default "road") 
       }
       
-      // 1. Parse Coordinates
-      const rawCoords = data.features[0].geometry.coordinates;
-      const leafletCoords = rawCoords.map(coord => [coord[1], coord[0]]);
-      setRouteCoordinates(leafletCoords);
+      Return ONLY the JSON object. No other text.
+    `;
 
-      // 2. Get Stats (Try API first, Fallback to Manual Math)
-      const props = data.features[0].properties;
-      const summary = props.summary || (props.segments && props.segments[0]);
-
-      if (summary && summary.distance) {
-        // API gave us stats
-        setRouteStats({
-            distance: (summary.distance / 1000).toFixed(2),
-            duration: Math.round(summary.duration / 60)
+    try {
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${OPENAI_KEY}`
+            },
+            body: JSON.stringify({
+                model: "gpt-3.5-turbo", // Fast and cheap model
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    { role: "user", content: chatInput }
+                ],
+                temperature: 0.7
+            })
         });
-      } else {
-        // API failed stats -> Calculate manually from the line
-        console.warn("API stats missing, calculating manually...");
-        const manualStats = calculateStatsFromCoords(leafletCoords);
-        setRouteStats(manualStats);
-      }
 
-      console.log("Route generated successfully!");
+        const data = await response.json();
+
+        if (data.error) {
+            throw new Error(data.error.message);
+        }
+
+        const rawText = data.choices[0].message.content;
+        console.log("ChatGPT Response:", rawText);
+
+        // Surgical JSON Extraction (Just in case it chats)
+        const jsonStart = rawText.indexOf('{');
+        const jsonEnd = rawText.lastIndexOf('}');
+        
+        if (jsonStart === -1) throw new Error("No JSON found");
+
+        const cleanJson = rawText.substring(jsonStart, jsonEnd + 1);
+        const params = JSON.parse(cleanJson);
+        
+        console.log("Parsed Params:", params); 
+        if (params.distance_km) setDistance(params.distance_km);
+        executeRunPlan(params);
 
     } catch (error) {
-      console.error("Network Error:", error);
-      alert("Network Error: Check console for details.");
+        console.error("OpenAI Error:", error);
+        setAiMessage(`Error: ${error.message}`);
+        setIsThinking(false);
     }
   };
 
-  // 3. Download GPX Function
-  const downloadGPX = () => {
-    if (routeCoordinates.length === 0) return;
-
-    let gpxData = `<?xml version="1.0" encoding="UTF-8"?>
-<gpx version="1.1" creator="MyRouteApp">
-  <trk>
-    <name>Run ${routeStats ? routeStats.distance : distance}km</name>
-    <trkseg>
-`;
-
-    routeCoordinates.forEach(coord => {
-      // Leaflet is [Lat, Lon], GPX expects lat="..." lon="..."
-      gpxData += `      <trkpt lat="${coord[0]}" lon="${coord[1]}"></trkpt>\n`;
-    });
-
-    gpxData += `    </trkseg>
-  </trk>
-</gpx>`;
-
-    const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `route-${routeStats ? routeStats.distance : distance}km.gpx`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+  // --- ROUTING LOGIC (Unchanged) ---
+  const executeRunPlan = async (params) => {
+    const profile = params.preference === 'road' ? 'foot-walking' : 'foot-hiking';
+    if (params.destination_name) {
+      setAiMessage(`Plotting run to ${params.destination_name}...`);
+      await generateDestinationRoute(params.destination_name, profile);
+    } else {
+      setAiMessage(`Generating ${params.distance_km}km ${params.preference} loop...`);
+      await generateLoopRoute(params.distance_km, profile);
+    }
+    setIsThinking(false);
   };
 
-  // Loading State
-  if (!position) return <div style={{textAlign: 'center', marginTop: '50px', fontSize: '18px'}}>Locating you...</div>;
+  const generateDestinationRoute = async (placeName, profile) => {
+    try {
+      const geoUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${placeName}&viewbox=${position[1]-0.5},${position[0]+0.5},${position[1]+0.5},${position[0]-0.5}&bounded=1`;
+      const geoRes = await fetch(geoUrl);
+      const geoData = await geoRes.json();
+      if (!geoData.length) { setAiMessage(`Can't find ${placeName}`); return; }
+      
+      const { lat, lon } = geoData[0];
+      const url = `https://api.openrouteservice.org/v2/directions/${profile}/geojson`;
+      const body = { coordinates: [[position[1], position[0]], [parseFloat(lon), parseFloat(lat)], [position[1], position[0]]] };
+      await fetchAndDraw(url, body);
+    } catch (err) { console.error(err); setAiMessage("Routing failed."); }
+  };
+
+  const generateLoopRoute = async (dist, profile) => {
+    const url = `https://api.openrouteservice.org/v2/directions/${profile}/geojson`;
+    const body = {
+      coordinates: [[position[1], position[0]]],
+      options: { round_trip: { length: (dist || 5) * 1000, points: 3, seed: Math.floor(Math.random() * 10000) } }
+    };
+    await fetchAndDraw(url, body);
+  };
+
+  const fetchAndDraw = async (url, body) => {
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Authorization': ORS_KEY.trim(), 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        const data = await response.json();
+        if (!data.features) throw new Error("No route");
+
+        const coords = data.features[0].geometry.coordinates.map(c => [c[1], c[0]]);
+        setRouteCoordinates(coords);
+        const summary = data.features[0].properties.summary || (data.features[0].properties.segments && data.features[0].properties.segments[0]);
+        if (summary) {
+            setRouteStats({
+                distance: (summary.distance / 1000).toFixed(2),
+                duration: Math.round(summary.duration / 60)
+            });
+        }
+    } catch (err) {
+        console.error(err);
+        setAiMessage("Route generation failed.");
+    }
+  };
+
+  const downloadGPX = () => {
+    if (routeCoordinates.length === 0) return;
+    let gpx = `<?xml version="1.0"?><gpx version="1.1" creator="MyRouteApp"><trk><name>Run</name><trkseg>`;
+    routeCoordinates.forEach(c => gpx += `<trkpt lat="${c[0]}" lon="${c[1]}"></trkpt>`);
+    gpx += `</trkseg></trk></gpx>`;
+    const blob = new Blob([gpx], { type: 'application/gpx+xml' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `route.gpx`;
+    link.click();
+  };
+
+  if (!position) return <div style={{color:'white', background:'#222', height:'100vh', display:'flex', alignItems:'center', justifyContent:'center'}}>Locating you...</div>;
 
   return (
     <div style={{ position: 'relative' }}>
-      
-      {/* --- Control Panel Card --- */}
-      <div style={{
-        position: 'absolute', 
-        top: '20px', 
-        right: '20px', 
-        zIndex: 1000, 
-        background: 'white', 
-        padding: '20px', 
-        borderRadius: '12px',
-        boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
-        width: '300px',
-        fontFamily: 'Arial, sans-serif'
-      }}>
-        <h3 style={{ margin: '0 0 15px 0', fontSize: '18px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          🏃 Route Builder
-        </h3>
-        
-        {/* Distance Slider */}
-        <div style={{ marginBottom: '20px' }}>
-          <label style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold' }}>
-            <span>Target Distance</span>
-            <span style={{color: '#fc4c02'}}>{distance} km</span>
-          </label>
-          <input 
-            type="range" 
-            min="1" 
-            max="21" 
-            step="0.5"
-            value={distance}
-            onChange={(e) => setDistance(e.target.value)}
-            style={{ width: '100%', cursor: 'pointer', accentColor: '#fc4c02' }}
-          />
+      <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 1000, background: '#1a1a1a', color: 'white', padding: '15px', borderRadius: '12px', width: '320px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', fontFamily: 'Arial' }}>
+        <h3 style={{ margin: '0 0 10px 0', color: '#fc4c02', fontSize: '16px' }}>🤖 AI Assistant (ChatGPT)</h3>
+        <div style={{ background: '#333', padding: '8px', borderRadius: '6px', marginBottom: '10px', fontSize: '13px', minHeight: '30px' }}>{isThinking ? <span style={{fontStyle:'italic', color:'#aaa'}}>Thinking...</span> : aiMessage}</div>
+        <div style={{ display: 'flex', gap: '5px' }}>
+            <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="e.g. 5km on main roads" onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', fontSize:'13px' }} />
+            <button onClick={handleChatSubmit} style={{ background: '#fc4c02', color: 'white', border: 'none', borderRadius: '6px', cursor:'pointer' }}>Go</button>
         </div>
+      </div>
 
-        <button 
-          onClick={generateRoute} 
-          style={{ 
-            width: '100%', 
-            padding: '12px', 
-            background: '#fc4c02', // Strava Orange
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '8px', 
-            fontSize: '16px',
-            cursor: 'pointer',
-            fontWeight: 'bold',
-            transition: 'background 0.2s'
-          }}
-          onMouseOver={(e) => e.target.style.background = '#e34402'}
-          onMouseOut={(e) => e.target.style.background = '#fc4c02'}
-        >
-          Generate Route
-        </button>
-
-        {/* Stats Display & Download */}
+      <div style={{ position: 'absolute', top: '180px', right: '20px', zIndex: 1000, background: '#1a1a1a', color: 'white', padding: '20px', borderRadius: '12px', width: '320px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', fontFamily: 'Arial' }}>
+        <h3 style={{ margin: '0 0 15px 0', fontSize: '18px' }}>🏃 Manual Control</h3>
+        <div style={{ marginBottom: '20px' }}>
+          <label style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold' }}><span>Target Distance</span><span style={{color: '#fc4c02'}}>{distance} km</span></label>
+          <input type="range" min="1" max="21" step="0.5" value={distance} onChange={(e) => setDistance(e.target.value)} style={{ width: '100%', cursor: 'pointer', accentColor: '#fc4c02' }} />
+        </div>
+        <button onClick={() => generateLoopRoute(distance, 'foot-hiking')} style={{ width: '100%', padding: '12px', background: '#fc4c02', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}>Generate Loop</button>
         {routeStats && (
-          <div style={{ marginTop: '20px', paddingTop: '15px', borderTop: '1px solid #eee' }}>
+          <div style={{ marginTop: '20px', paddingTop: '15px', borderTop: '1px solid #444' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', textAlign: 'center', marginBottom: '15px' }}>
-              <div>
-                <div style={{fontSize: '12px', color: '#666', marginBottom: '4px'}}>ACTUAL DISTANCE</div>
-                <div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.distance} <span style={{fontSize:'12px'}}>km</span></div>
-              </div>
-              <div>
-                <div style={{fontSize: '12px', color: '#666', marginBottom: '4px'}}>EST. TIME</div>
-                <div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.duration} <span style={{fontSize:'12px'}}>min</span></div>
-              </div>
+              <div><div style={{fontSize: '12px', color: '#aaa'}}>DISTANCE</div><div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.distance} <span style={{fontSize:'12px'}}>km</span></div></div>
+              <div><div style={{fontSize: '12px', color: '#aaa'}}>TIME</div><div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.duration} <span style={{fontSize:'12px'}}>min</span></div></div>
             </div>
-
-            <button 
-                onClick={downloadGPX}
-                style={{ 
-                  width: '100%', 
-                  padding: '8px', 
-                  background: 'white', 
-                  color: '#333', 
-                  border: '1px solid #ccc', 
-                  borderRadius: '6px', 
-                  fontSize: '14px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  gap: '6px',
-                  fontWeight: '500'
-                }}
-            >
-                📥 Download GPX
-            </button>
+            <button onClick={downloadGPX} style={{ width: '100%', padding: '8px', background: '#333', color: 'white', border: '1px solid #555', borderRadius: '6px', cursor:'pointer' }}>📥 Download GPX</button>
           </div>
         )}
       </div>
 
-      {/* --- Map --- */}
       <MapContainer center={position} zoom={13} style={{ height: "100vh", width: "100vw" }}>
-        <TileLayer
-          attribution='&copy; OpenStreetMap contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
-        
+        <TileLayer attribution='&copy; OSM' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <RecenterMap center={position} />
-        
-        <Marker position={position}>
-          <Popup>Start Location</Popup>
-        </Marker>
-
-        {routeCoordinates.length > 0 && (
-          <Polyline positions={routeCoordinates} color="#fc4c02" weight={5} opacity={0.8} />
-        )}
-
+        <Marker position={position}><Popup>Start</Popup></Marker>
+        {routeCoordinates.length > 0 && <Polyline positions={routeCoordinates} color="#fc4c02" weight={5} opacity={0.8} />}
       </MapContainer>
     </div>
   );
