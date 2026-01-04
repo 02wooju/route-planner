@@ -36,7 +36,7 @@ const MapComponent = () => {
   // ---------------------------------------------------------
   // 🔑 API KEYS
   // ---------------------------------------------------------
-  const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
+  const ORS_KEY = ""; 
   
   // PASTE YOUR OPENAI KEY HERE (Starts with 'sk-...')
   const OPENAI_KEY = ""; 
