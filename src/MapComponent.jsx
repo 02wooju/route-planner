@@ -33,14 +33,7 @@ const MapComponent = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [aiMessage, setAiMessage] = useState("Tell me what run you want!");
 
-  // ---------------------------------------------------------
-  // 🔑 API KEYS
-  // ---------------------------------------------------------
-  const ORS_KEY = ""; 
-  
-  // PASTE YOUR OPENAI KEY HERE (Starts with 'sk-...')
-  const OPENAI_KEY = ""; 
-  // ---------------------------------------------------------
+
 
   useEffect(() => {
     if (navigator.geolocation) {
