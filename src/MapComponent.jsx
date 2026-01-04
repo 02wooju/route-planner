@@ -39,7 +39,7 @@ const MapComponent = () => {
   const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
   
   // PASTE YOUR OPENAI KEY HERE (Starts with 'sk-...')
-  const OPENAI_KEY = "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"; 
+  const OPENAI_KEY = ""; 
   // ---------------------------------------------------------
 
   useEffect(() => {
