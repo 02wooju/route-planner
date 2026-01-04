@@ -33,7 +33,11 @@ const MapComponent = () => {
   const [isThinking, setIsThinking] = useState(false);
   const [aiMessage, setAiMessage] = useState("Tell me what run you want!");
 
-
+  // ---------------------------------------------------------
+  // 🔑 API KEY (Only for Maps now!)
+  // ---------------------------------------------------------
+  const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
+  // ---------------------------------------------------------
 
   useEffect(() => {
     if (navigator.geolocation) {
@@ -44,78 +48,55 @@ const MapComponent = () => {
     }
   }, []);
 
-  // --- THE BRAIN: OpenAI (ChatGPT) Connector ---
+  // --- THE BRAIN: Local Llama 3 Connector ---
   const handleChatSubmit = async () => {
     if (!chatInput.trim()) return;
     setIsThinking(true);
-    setAiMessage("Thinking...");
+    setAiMessage("Thinking locally...");
 
-    if (!OPENAI_KEY.startsWith("sk-")) {
-        setAiMessage("Error: Key must start with 'sk-'");
-        setIsThinking(false);
-        return;
-    }
-
+    // Simplified prompt for Llama 3
     const systemPrompt = `
-      You are a running route API. Extract parameters from the user's request into valid JSON.
+      You are a route planner. 
+      Analyze the user request: "${chatInput}"
       
-      Output Format:
-      { 
-        "distance_km": number (default 5), 
-        "destination_name": string or null, 
-        "preference": "road" or "trail" (default "road") 
+      Return a JSON object with these exact keys:
+      {
+        "distance_km": number (default 5),
+        "destination_name": string or null,
+        "preference": "road" or "trail" (default "road")
       }
-      
-      Return ONLY the JSON object. No other text.
     `;
 
     try {
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        // CALL YOUR LOCAL PROXY SERVER
+        const response = await fetch("http://localhost:3001/api/chat", {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "Authorization": `Bearer ${OPENAI_KEY}`
-            },
-            body: JSON.stringify({
-                model: "gpt-3.5-turbo", // Fast and cheap model
-                messages: [
-                    { role: "system", content: systemPrompt },
-                    { role: "user", content: chatInput }
-                ],
-                temperature: 0.7
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ 
+                prompt: systemPrompt 
             })
         });
 
-        const data = await response.json();
+        const rawText = await response.json();
+        if (rawText.error) throw new Error(rawText.error);
 
-        if (data.error) {
-            throw new Error(data.error.message);
-        }
+        console.log("Llama 3 says:", rawText);
 
-        const rawText = data.choices[0].message.content;
-        console.log("ChatGPT Response:", rawText);
-
-        // Surgical JSON Extraction (Just in case it chats)
-        const jsonStart = rawText.indexOf('{');
-        const jsonEnd = rawText.lastIndexOf('}');
-        
-        if (jsonStart === -1) throw new Error("No JSON found");
-
-        const cleanJson = rawText.substring(jsonStart, jsonEnd + 1);
-        const params = JSON.parse(cleanJson);
+        // Parse the JSON
+        const params = JSON.parse(rawText);
         
         console.log("Parsed Params:", params); 
         if (params.distance_km) setDistance(params.distance_km);
         executeRunPlan(params);
 
     } catch (error) {
-        console.error("OpenAI Error:", error);
-        setAiMessage(`Error: ${error.message}`);
+        console.error("Local AI Error:", error);
+        setAiMessage("Ensure 'node server.js' is running!");
         setIsThinking(false);
     }
   };
 
-  // --- ROUTING LOGIC (Unchanged) ---
+  // --- ROUTING LOGIC (Standard) ---
   const executeRunPlan = async (params) => {
     const profile = params.preference === 'road' ? 'foot-walking' : 'foot-hiking';
     if (params.destination_name) {
@@ -193,7 +174,7 @@ const MapComponent = () => {
   return (
     <div style={{ position: 'relative' }}>
       <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 1000, background: '#1a1a1a', color: 'white', padding: '15px', borderRadius: '12px', width: '320px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', fontFamily: 'Arial' }}>
-        <h3 style={{ margin: '0 0 10px 0', color: '#fc4c02', fontSize: '16px' }}>🤖 AI Assistant (ChatGPT)</h3>
+        <h3 style={{ margin: '0 0 10px 0', color: '#fc4c02', fontSize: '16px' }}>🦙 Local AI Planner</h3>
         <div style={{ background: '#333', padding: '8px', borderRadius: '6px', marginBottom: '10px', fontSize: '13px', minHeight: '30px' }}>{isThinking ? <span style={{fontStyle:'italic', color:'#aaa'}}>Thinking...</span> : aiMessage}</div>
         <div style={{ display: 'flex', gap: '5px' }}>
             <input type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="e.g. 5km on main roads" onKeyDown={(e) => e.key === 'Enter' && handleChatSubmit()} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', fontSize:'13px' }} />
