@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
-// --- STANDARD START/END ICON ---
+// --- ICONS ---
 import icon from 'leaflet/dist/images/marker-icon.png';
 import iconShadow from 'leaflet/dist/images/marker-shadow.png';
 let DefaultIcon = L.icon({
@@ -13,15 +13,15 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// --- 1. WAYPOINT ICON (Solid White - Click to Remove) ---
+// Draggable White Dot
 const DragIcon = L.divIcon({
   className: 'custom-drag-icon',
-  html: `<div style="background-color: white; border: 2px solid #fc4c02; width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,0.5); cursor: pointer;"></div>`,
+  html: `<div style="background-color: white; border: 2px solid #fc4c02; width: 12px; height: 12px; border-radius: 50%; cursor: pointer;"></div>`,
   iconSize: [12, 12],
   iconAnchor: [6, 6]
 });
 
-// --- 2. GHOST ICON (Semi-transparent - Drag to Add) ---
+// Ghost Dot (Hover)
 const GhostIcon = L.divIcon({
   className: 'custom-ghost-icon',
   html: `<div style="background-color: rgba(255, 255, 255, 0.6); border: 2px solid #fc4c02; width: 12px; height: 12px; border-radius: 50%; cursor: grab;"></div>`,
@@ -41,14 +41,24 @@ const MapComponent = () => {
   const [position, setPosition] = useState(null); 
   const [routeCoordinates, setRouteCoordinates] = useState([]);
   const [routeStats, setRouteStats] = useState(null);
-  const [distance, setDistance] = useState(5); 
+  
+  // UI State
+  const [distance, setDistance] = useState(5);
   const [statusMsg, setStatusMsg] = useState("");
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const [waypoints, setWaypoints] = useState([]); // The list of all White Dots
-  const [hoverPos, setHoverPos] = useState(null); // The Ghost Dot position
+  // Route State (Draggable)
+  const [waypoints, setWaypoints] = useState([]); 
+  const [hoverPos, setHoverPos] = useState(null); 
+
+  // --- 1. DYNAMIC API URL (Fixes the "Localhost" Error) ---
+  // In Dev: Uses http://localhost:3001
+  // In Prod: Uses "" (Relative path, talks to the same server serving the site)
+  const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
 
   // ---------------------------------------------------------
-  // 🔑 YOUR API KEY
+  // 🔑 YOUR API KEY 
+  // (Note: Put your REAL key starting with '5b3ce...' here)
   // ---------------------------------------------------------
   const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
   // ---------------------------------------------------------
@@ -62,6 +72,58 @@ const MapComponent = () => {
     }
   }, []);
 
+  // --- 2. THE AI ARCHITECT ---
+  const generateAiLoop = async () => {
+    if (!position) return;
+    setIsGenerating(true);
+    setStatusMsg("AI is designing your route...");
+
+    const prompt = `
+      You are a Route Architect. Design a unique running loop of ${distance}km.
+      Output JSON ONLY:
+      {
+        "sides": number (3, 4, or 5),
+        "bearing": number (0-360),
+        "description": "short string"
+      }
+    `;
+
+    try {
+        // UPDATED: Now uses API_BASE
+        const response = await fetch(`${API_BASE}/api/chat`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: prompt })
+        });
+
+        const rawData = await response.json();
+        console.log("AI Raw Response:", rawData);
+
+        let aiDecision;
+        if (typeof rawData === 'string') {
+            try {
+                aiDecision = JSON.parse(rawData);
+            } catch (e) {
+                console.warn("Could not parse AI string, using default.");
+                aiDecision = { sides: 4, bearing: 0, description: "Standard Loop" };
+            }
+        } else {
+            aiDecision = rawData;
+        }
+
+        setStatusMsg(`AI Plan: ${aiDecision.description || "Custom Loop"}`);
+        generatePolygon(distance, aiDecision.sides || 4, aiDecision.bearing || 0);
+
+    } catch (err) {
+        console.error("AI Error:", err);
+        setStatusMsg("AI Error. Switching to backup math...");
+        generatePolygon(distance, 4, Math.floor(Math.random() * 360)); 
+    } finally {
+        setIsGenerating(false);
+    }
+  };
+
+  // --- 3. THE GEOMETRY BUILDER ---
   const getPointAtDistance = (lat, lon, distKm, bearing) => {
     const R = 6371; 
     const latRad = (lat * Math.PI) / 180;
@@ -72,39 +134,46 @@ const MapComponent = () => {
     return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
   };
 
-  const generateSquarePoints = (targetDist, modifier = 4.8) => {
-    const sideLen = targetDist / modifier; 
-    const startAngle = Math.floor(Math.random() * 4) * 90; 
+  const generatePolygon = (dist, sides, startAngle) => {
+    const modifier = sides === 3 ? 3.5 : (sides === 4 ? 4.8 : 5.5);
+    const sideLen = dist / modifier;
+    const turnAngle = 360 / sides; 
 
-    const c1 = getPointAtDistance(position[0], position[1], sideLen, startAngle);
-    const c2 = getPointAtDistance(c1[0], c1[1], sideLen, startAngle + 90);
-    const c3 = getPointAtDistance(c2[0], c2[1], sideLen, startAngle + 180);
+    let currentPoint = [position[1], position[0]]; 
+    let currentAngle = startAngle;
     
-    const newWaypoints = [
-        [position[1], position[0]], 
-        [c1[1], c1[0]],             
-        [c2[1], c2[0]],             
-        [c3[1], c3[0]],             
-        [position[1], position[0]]  
-    ];
+    const newWaypoints = [[position[1], position[0]]]; 
 
-    setWaypoints(newWaypoints); 
-    fetchRouteFromWaypoints(newWaypoints, targetDist, modifier, 1); 
+    for(let i=0; i < sides - 1; i++) {
+        const next = getPointAtDistance(currentPoint[1], currentPoint[0], sideLen, currentAngle);
+        newWaypoints.push([next[1], next[0]]); 
+        currentPoint = [next[1], next[0]];
+        currentAngle = (currentAngle + turnAngle) % 360;
+    }
+
+    newWaypoints.push([position[1], position[0]]); 
+    
+    setWaypoints(newWaypoints);
+    fetchRouteFromWaypoints(newWaypoints, dist, modifier);
   };
 
+  // --- 4. ROUTE FETCHING ---
   const fetchRouteFromWaypoints = async (points, targetDist = null, modifier = 4.8, attempt = 1) => {
-    if(attempt === 1 && targetDist) setStatusMsg("Calculating...");
-
     const body = { coordinates: points, preference: "shortest" };
 
     try {
-        const response = await fetch("http://localhost:3001/api/route", {
+        // UPDATED: Now uses API_BASE
+        const response = await fetch(`${API_BASE}/api/route`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ url: `https://api.openrouteservice.org/v2/directions/foot-walking/geojson`, body: body, key: ORS_KEY })
         });
         const data = await response.json();
-        if (!data.features) throw new Error("No route");
+        
+        if (!data.features) {
+            console.error("Map Error Data:", data);
+            throw new Error("No route found");
+        }
 
         const summary = data.features[0].properties.summary;
         const actualDist = summary.distance / 1000;
@@ -113,86 +182,64 @@ const MapComponent = () => {
             const errorRatio = actualDist / targetDist;
             const newModifier = modifier * errorRatio; 
             setStatusMsg(`Refining Size (Attempt ${attempt + 1})...`);
-            generateSquarePoints(targetDist, newModifier);
-            return;
+            generatePolygon(targetDist, points.length - 1, 0); 
+        } else {
+             setStatusMsg("");
         }
 
         const coords = data.features[0].geometry.coordinates.map(c => [c[1], c[0]]);
         setRouteCoordinates(coords);
-        setRouteStats({
-            distance: actualDist.toFixed(2),
-            duration: Math.round(summary.duration / 60)
-        });
-        setStatusMsg("");
+        setRouteStats({ distance: actualDist.toFixed(2), duration: Math.round(summary.duration / 60) });
 
     } catch (error) {
         console.error(error);
-        setStatusMsg("Route failed.");
+        setStatusMsg("Route calculation failed.");
     }
   };
 
-  // --- GOOGLE MAPS FEATURE 1: DRAG TO ADD ---
+  // --- 5. EDITOR LOGIC ---
   const handleGhostDragEnd = (e) => {
     const newPoint = e.target.getLatLng();
     const newPointArr = [newPoint.lng, newPoint.lat];
 
-    // Figure out WHERE on the line to insert this point
     let bestIndex = 1;
     let minAddedDist = Infinity;
-
     for (let i = 0; i < waypoints.length - 1; i++) {
         const A = L.latLng(waypoints[i][1], waypoints[i][0]);
         const B = L.latLng(waypoints[i+1][1], waypoints[i+1][0]);
         const detour = A.distanceTo(newPoint) + newPoint.distanceTo(B);
-        
-        if (detour < minAddedDist) {
-            minAddedDist = detour;
-            bestIndex = i + 1;
-        }
+        if (detour < minAddedDist) { minAddedDist = detour; bestIndex = i + 1; }
     }
 
-    const updatedWaypoints = [
-        ...waypoints.slice(0, bestIndex),
-        newPointArr,
-        ...waypoints.slice(bestIndex)
-    ];
-
-    setWaypoints(updatedWaypoints);
+    const updated = [...waypoints.slice(0, bestIndex), newPointArr, ...waypoints.slice(bestIndex)];
+    setWaypoints(updated);
     setHoverPos(null); 
-    fetchRouteFromWaypoints(updatedWaypoints);
-  };
-
-  // --- GOOGLE MAPS FEATURE 2: CLICK TO REMOVE (REVERT) ---
-  const handleWaypointClick = (index) => {
-    // Prevent deleting Start or End points
-    if (index === 0 || index === waypoints.length - 1) {
-        alert("Cannot remove Start/End point.");
-        return;
-    }
-
-    // Remove the point from array
-    const updatedWaypoints = waypoints.filter((_, i) => i !== index);
-    
-    setWaypoints(updatedWaypoints);
-    fetchRouteFromWaypoints(updatedWaypoints);
+    fetchRouteFromWaypoints(updated);
   };
 
   const handleWaypointDrag = (index, newLatLng) => {
-    const updatedWaypoints = [...waypoints];
-    updatedWaypoints[index] = [newLatLng.lng, newLatLng.lat];
-    setWaypoints(updatedWaypoints);
-    fetchRouteFromWaypoints(updatedWaypoints); 
+    const updated = [...waypoints];
+    updated[index] = [newLatLng.lng, newLatLng.lat];
+    setWaypoints(updated);
+    fetchRouteFromWaypoints(updated); 
+  };
+
+  const handleWaypointClick = (index) => {
+    if (index === 0 || index === waypoints.length - 1) return;
+    const updated = waypoints.filter((_, i) => i !== index);
+    setWaypoints(updated);
+    fetchRouteFromWaypoints(updated);
   };
 
   const downloadGPX = () => {
-    if (routeCoordinates.length === 0) return;
+    if (!routeCoordinates.length) return;
     let gpx = `<?xml version="1.0"?><gpx version="1.1" creator="MyRouteApp"><trk><name>Run</name><trkseg>`;
     routeCoordinates.forEach(c => gpx += `<trkpt lat="${c[0]}" lon="${c[1]}"></trkpt>`);
     gpx += `</trkseg></trk></gpx>`;
     const blob = new Blob([gpx], { type: 'application/gpx+xml' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
-    link.download = `run_route.gpx`;
+    link.download = `route.gpx`;
     link.click();
   };
 
@@ -200,13 +247,11 @@ const MapComponent = () => {
 
   return (
     <div style={{ position: 'relative' }}>
+      {/* CLEAN CONTROL PANEL */}
       <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 1000, background: '#1a1a1a', color: 'white', padding: '20px', borderRadius: '12px', width: '320px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', fontFamily: 'Arial' }}>
-        <h3 style={{ margin: '0 0 15px 0', fontSize: '18px' }}>🟥 Square Loop Planner</h3>
-        <div style={{fontSize:'13px', color:'#aaa', marginBottom:'15px', lineHeight: '1.4'}}>
-            <b>Google Maps Editor:</b><br/>
-            • 🖱️ <b>Drag</b> the line to create a new point.<br/>
-            • ❌ <b>Click</b> a white point to delete it (revert).
-        </div>
+        <h3 style={{ margin: '0 0 10px 0', fontSize: '18px', display:'flex', alignItems:'center', gap:'10px' }}>
+            🏃 AI Loop Generator
+        </h3>
         
         <div style={{ marginBottom: '20px' }}>
           <label style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold' }}>
@@ -221,21 +266,24 @@ const MapComponent = () => {
         </div>
 
         <button 
-          onClick={() => generateSquarePoints(distance)} 
-          style={{ width: '100%', padding: '12px', background: '#fc4c02', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer' }}
+            onClick={generateAiLoop}
+            disabled={isGenerating}
+            style={{ width: '100%', padding: '12px', background: isGenerating ? '#555' : '#fc4c02', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: isGenerating ? 'wait' : 'pointer' }}
         >
-          Generate Box Loop
+          {isGenerating ? 'AI Designing...' : 'Generate AI Loop'}
         </button>
 
-        {statusMsg && <div style={{marginTop:'10px', color:'#aaa', fontSize:'12px', textAlign:'center'}}>{statusMsg}</div>}
+        {statusMsg && <div style={{marginTop:'10px', color:'#aaa', fontSize:'12px', textAlign:'center', fontStyle:'italic'}}>{statusMsg}</div>}
 
-        {routeStats && !statusMsg && (
-          <div style={{ marginTop: '20px', paddingTop: '15px', borderTop: '1px solid #444' }}>
+        {/* STATS & DOWNLOAD */}
+        {routeStats && (
+          <div style={{ marginTop:'20px', paddingTop: '15px', borderTop: '1px solid #444' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', textAlign: 'center', marginBottom: '15px' }}>
               <div><div style={{fontSize: '12px', color: '#aaa'}}>DISTANCE</div><div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.distance} <span style={{fontSize:'12px'}}>km</span></div></div>
               <div><div style={{fontSize: '12px', color: '#aaa'}}>TIME</div><div style={{fontSize: '18px', fontWeight: 'bold'}}>{routeStats.duration} <span style={{fontSize:'12px'}}>min</span></div></div>
             </div>
             <button onClick={downloadGPX} style={{ width: '100%', padding: '8px', background: '#333', color: 'white', border: '1px solid #555', borderRadius: '6px', cursor:'pointer' }}>📥 Download GPX</button>
+            <div style={{marginTop:'10px', fontSize:'11px', color:'#777', textAlign:'center'}}>Drag line to edit • Click points to remove</div>
           </div>
         )}
       </div>
@@ -244,34 +292,22 @@ const MapComponent = () => {
         <TileLayer attribution='&copy; OSM' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <RecenterMap center={position} />
         
-        <Marker position={position} icon={DefaultIcon}><Popup>Start/End</Popup></Marker>
+        <Marker position={position} icon={DefaultIcon}><Popup>Start</Popup></Marker>
 
-        {/* 1. ROUTE LINE (Detects Hover) */}
         {routeCoordinates.length > 0 && (
             <Polyline 
                 positions={routeCoordinates} 
                 color="#fc4c02" 
                 weight={6} 
                 opacity={0.8} 
-                eventHandlers={{
-                    mousemove: (e) => setHoverPos(e.latlng)
-                }}
+                eventHandlers={{ mousemove: (e) => setHoverPos(e.latlng) }}
             />
         )}
 
-        {/* 2. GHOST MARKER (Drag to Create) */}
         {hoverPos && (
-            <Marker
-                position={hoverPos}
-                icon={GhostIcon}
-                draggable={true}
-                eventHandlers={{
-                    dragend: handleGhostDragEnd
-                }}
-            />
+            <Marker position={hoverPos} icon={GhostIcon} draggable={true} eventHandlers={{ dragend: handleGhostDragEnd }} />
         )}
 
-        {/* 3. WAYPOINTS (Click to Delete, Drag to Move) */}
         {waypoints.map((wp, index) => {
             if (index === 0 || index === waypoints.length - 1) return null;
             return (
@@ -282,11 +318,9 @@ const MapComponent = () => {
                     icon={DragIcon}
                     eventHandlers={{
                         dragend: (e) => handleWaypointDrag(index, e.target.getLatLng()),
-                        click: (e) => handleWaypointClick(index) // CLICK TO DELETE!
+                        click: (e) => handleWaypointClick(index)
                     }}
-                >
-                   <Popup>Click to remove this point</Popup> 
-                </Marker>
+                />
             )
         })}
 
