@@ -1,43 +1,57 @@
 // server.js
 import express from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 
+// --- CONFIGURATION ---
 const app = express();
+const PORT = process.env.PORT || 3000; // Cloud hosts set their own PORT
+const GEMINI_API_KEY = process.env.GEMINI_KEY; // We will set this in the Cloud Dashboard
+
+// --- MIDDLEWARE ---
 app.use(cors());
 app.use(express.json());
 
-// 1. AI LANE (Talks to Ollama)
+// --- SERVE STATIC FRONTEND (Production Magic) ---
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Serve the "dist" folder (where React builds to)
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// --- 1. CLOUD AI LANE (Gemini) ---
 app.post('/api/chat', async (req, res) => {
   try {
     const { prompt } = req.body;
-    console.log("🦙 AI Request received...");
     
-    const response = await fetch("http://127.0.0.1:11434/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            model: "llama3",
-            prompt: prompt,
-            stream: false,
-            format: "json"
-        })
-    });
+    // Check if Key exists
+    if (!GEMINI_API_KEY) {
+        return res.status(500).json({ error: "Server missing API Key" });
+    }
 
-    const data = await response.json();
-    res.json(data.response); 
+    const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    // Clean up Gemini's markdown formatting if it exists
+    const cleanJson = text.replace(/```json|```/g, '').trim();
+    
+    res.json(cleanJson); 
 
   } catch (error) {
     console.error("AI Error:", error);
-    res.status(500).json({ error: "Local AI Failed" });
+    res.status(500).json({ error: "Cloud AI Failed" });
   }
 });
 
-// 2. MAP LANE (Talks to OpenRouteService) - YOU WERE MISSING THIS!
+// --- 2. MAP LANE (OpenRouteService Proxy) ---
 app.post('/api/route', async (req, res) => {
     try {
         const { url, body, key } = req.body;
-        console.log("🗺️ Map Request proxied...");
-
         const response = await fetch(url, {
             method: 'POST',
             headers: { 
@@ -46,16 +60,18 @@ app.post('/api/route', async (req, res) => {
             },
             body: JSON.stringify(body)
         });
-
         const data = await response.json();
         res.json(data);
-
     } catch (error) {
-        console.error("Map Proxy Error:", error);
-        res.status(500).json({ error: "Map Request Failed" });
+        res.status(500).json({ error: "Map Proxy Failed" });
     }
 });
 
-app.listen(3001, () => {
-  console.log('✅ Proxy Server Running (AI + Maps) on http://localhost:3001');
+// --- CATCH-ALL (For React Router) ---
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
+});
+
+app.listen(PORT, () => {
+  console.log(`✅ Cloud Server running on port ${PORT}`);
 });
