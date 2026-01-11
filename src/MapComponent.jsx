@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -13,7 +13,6 @@ let DefaultIcon = L.icon({
 });
 L.Marker.prototype.options.icon = DefaultIcon;
 
-// Draggable White Dot
 const DragIcon = L.divIcon({
   className: 'custom-drag-icon',
   html: `<div style="background-color: white; border: 2px solid #fc4c02; width: 12px; height: 12px; border-radius: 50%; cursor: pointer;"></div>`,
@@ -21,7 +20,6 @@ const DragIcon = L.divIcon({
   iconAnchor: [6, 6]
 });
 
-// Ghost Dot (Hover)
 const GhostIcon = L.divIcon({
   className: 'custom-ghost-icon',
   html: `<div style="background-color: rgba(255, 255, 255, 0.6); border: 2px solid #fc4c02; width: 12px; height: 12px; border-radius: 50%; cursor: grab;"></div>`,
@@ -42,23 +40,17 @@ const MapComponent = () => {
   const [routeCoordinates, setRouteCoordinates] = useState([]);
   const [routeStats, setRouteStats] = useState(null);
   
-  // UI State
   const [distance, setDistance] = useState(5);
   const [statusMsg, setStatusMsg] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
 
-  // Route State (Draggable)
   const [waypoints, setWaypoints] = useState([]); 
   const [hoverPos, setHoverPos] = useState(null); 
 
-  // --- 1. DYNAMIC API URL (Fixes the "Localhost" Error) ---
-  // In Dev: Uses http://localhost:3001
-  // In Prod: Uses "" (Relative path, talks to the same server serving the site)
+  // Dynamic API URL for Dev vs Prod
   const API_BASE = import.meta.env.DEV ? "http://localhost:3001" : "";
-
   // ---------------------------------------------------------
   // 🔑 YOUR API KEY 
-  // (Note: Put your REAL key starting with '5b3ce...' here)
   // ---------------------------------------------------------
   const ORS_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6ImNlZTY0MTcyNzkxNDRhODhiMGMzZjA2YTJmMmZiOTRiIiwiaCI6Im11cm11cjY0In0="; 
   // ---------------------------------------------------------
@@ -72,11 +64,11 @@ const MapComponent = () => {
     }
   }, []);
 
-  // --- 2. THE AI ARCHITECT ---
+  // --- 1. THE AI ARCHITECT ---
   const generateAiLoop = async () => {
     if (!position) return;
     setIsGenerating(true);
-    setStatusMsg("AI is designing your route...");
+    setStatusMsg("AI is designing...");
 
     const prompt = `
       You are a Route Architect. Design a unique running loop of ${distance}km.
@@ -89,7 +81,6 @@ const MapComponent = () => {
     `;
 
     try {
-        // UPDATED: Now uses API_BASE
         const response = await fetch(`${API_BASE}/api/chat`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -97,33 +88,29 @@ const MapComponent = () => {
         });
 
         const rawData = await response.json();
-        console.log("AI Raw Response:", rawData);
-
+        
         let aiDecision;
         if (typeof rawData === 'string') {
-            try {
-                aiDecision = JSON.parse(rawData);
-            } catch (e) {
-                console.warn("Could not parse AI string, using default.");
-                aiDecision = { sides: 4, bearing: 0, description: "Standard Loop" };
-            }
+            try { aiDecision = JSON.parse(rawData); } 
+            catch (e) { aiDecision = { sides: 4, bearing: 0, description: "Standard Loop" }; }
         } else {
             aiDecision = rawData;
         }
 
-        setStatusMsg(`AI Plan: ${aiDecision.description || "Custom Loop"}`);
+        setStatusMsg(`Plan: ${aiDecision.description || "Custom Loop"}`);
+        // Start the generation process
         generatePolygon(distance, aiDecision.sides || 4, aiDecision.bearing || 0);
 
     } catch (err) {
         console.error("AI Error:", err);
-        setStatusMsg("AI Error. Switching to backup math...");
+        setStatusMsg("AI Offline. Using Math.");
         generatePolygon(distance, 4, Math.floor(Math.random() * 360)); 
     } finally {
         setIsGenerating(false);
     }
   };
 
-  // --- 3. THE GEOMETRY BUILDER ---
+  // --- 2. THE GEOMETRY BUILDER ---
   const getPointAtDistance = (lat, lon, distKm, bearing) => {
     const R = 6371; 
     const latRad = (lat * Math.PI) / 180;
@@ -134,9 +121,12 @@ const MapComponent = () => {
     return [(lat2 * 180) / Math.PI, (lon2 * 180) / Math.PI];
   };
 
-  const generatePolygon = (dist, sides, startAngle) => {
+  // Updated: Now accepts 'attempt' to prevent infinite loops
+  const generatePolygon = (dist, sides, startAngle, attempt = 1) => {
     const modifier = sides === 3 ? 3.5 : (sides === 4 ? 4.8 : 5.5);
-    const sideLen = dist / modifier;
+    // If we are retrying, adjust size slightly to find better paths
+    const adjustedModifier = modifier + (attempt * 0.1); 
+    const sideLen = dist / adjustedModifier;
     const turnAngle = 360 / sides; 
 
     let currentPoint = [position[1], position[0]]; 
@@ -154,15 +144,15 @@ const MapComponent = () => {
     newWaypoints.push([position[1], position[0]]); 
     
     setWaypoints(newWaypoints);
-    fetchRouteFromWaypoints(newWaypoints, dist, modifier);
+    // Pass 'sides' and 'startAngle' so we can retry intelligently
+    fetchRouteFromWaypoints(newWaypoints, dist, adjustedModifier, attempt, { sides, startAngle });
   };
 
-  // --- 4. ROUTE FETCHING ---
-  const fetchRouteFromWaypoints = async (points, targetDist = null, modifier = 4.8, attempt = 1) => {
+  // --- 3. ROBUST ROUTER (Safe Spin Logic) ---
+  const fetchRouteFromWaypoints = async (points, targetDist = null, modifier = 4.8, attempt = 1, shapeParams = null) => {
     const body = { coordinates: points, preference: "shortest" };
 
     try {
-        // UPDATED: Now uses API_BASE
         const response = await fetch(`${API_BASE}/api/route`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -170,21 +160,33 @@ const MapComponent = () => {
         });
         const data = await response.json();
         
-        if (!data.features) {
-            console.error("Map Error Data:", data);
-            throw new Error("No route found");
+        // --- ERROR HANDLER (The "Safe Spin") ---
+        if (data.error || !data.features) {
+            console.warn(`Attempt ${attempt} Failed:`, data);
+            
+            // If it failed and we haven't tried too many times...
+            if (attempt <= 4 && shapeParams) {
+                setStatusMsg(`Path blocked. Spinning shape (Attempt ${attempt+1})...`);
+                // Rotate 45 degrees and try again
+                generatePolygon(targetDist, shapeParams.sides, shapeParams.startAngle + 45, attempt + 1);
+                return;
+            }
+            throw new Error("No route found (Try a different location or distance)");
         }
 
         const summary = data.features[0].properties.summary;
         const actualDist = summary.distance / 1000;
 
-        if (targetDist && Math.abs(actualDist - targetDist) > (targetDist * 0.15) && attempt <= 3) {
+        // --- DISTANCE AUTO-CORRECT ---
+        if (targetDist && Math.abs(actualDist - targetDist) > (targetDist * 0.15) && attempt <= 3 && shapeParams) {
             const errorRatio = actualDist / targetDist;
             const newModifier = modifier * errorRatio; 
-            setStatusMsg(`Refining Size (Attempt ${attempt + 1})...`);
-            generatePolygon(targetDist, points.length - 1, 0); 
+            setStatusMsg(`Refining Distance (Attempt ${attempt + 1})...`);
+            
+            // Call generatePolygon but increment attempt!
+            generatePolygon(targetDist, shapeParams.sides, shapeParams.startAngle, attempt + 1);
         } else {
-             setStatusMsg("");
+             setStatusMsg(""); // Success!
         }
 
         const coords = data.features[0].geometry.coordinates.map(c => [c[1], c[0]]);
@@ -193,15 +195,14 @@ const MapComponent = () => {
 
     } catch (error) {
         console.error(error);
-        setStatusMsg("Route calculation failed.");
+        setStatusMsg("Route failed. Try dragging points manually.");
     }
   };
 
-  // --- 5. EDITOR LOGIC ---
+  // --- 4. EDITOR LOGIC ---
   const handleGhostDragEnd = (e) => {
     const newPoint = e.target.getLatLng();
     const newPointArr = [newPoint.lng, newPoint.lat];
-
     let bestIndex = 1;
     let minAddedDist = Infinity;
     for (let i = 0; i < waypoints.length - 1; i++) {
@@ -210,7 +211,6 @@ const MapComponent = () => {
         const detour = A.distanceTo(newPoint) + newPoint.distanceTo(B);
         if (detour < minAddedDist) { minAddedDist = detour; bestIndex = i + 1; }
     }
-
     const updated = [...waypoints.slice(0, bestIndex), newPointArr, ...waypoints.slice(bestIndex)];
     setWaypoints(updated);
     setHoverPos(null); 
@@ -247,35 +247,19 @@ const MapComponent = () => {
 
   return (
     <div style={{ position: 'relative' }}>
-      {/* CLEAN CONTROL PANEL */}
       <div style={{ position: 'absolute', top: '20px', right: '20px', zIndex: 1000, background: '#1a1a1a', color: 'white', padding: '20px', borderRadius: '12px', width: '320px', boxShadow: '0 4px 20px rgba(0,0,0,0.5)', fontFamily: 'Arial' }}>
-        <h3 style={{ margin: '0 0 10px 0', fontSize: '18px', display:'flex', alignItems:'center', gap:'10px' }}>
-            🏃 AI Loop Generator
-        </h3>
-        
+        <h3 style={{ margin: '0 0 10px 0', fontSize: '18px', display:'flex', alignItems:'center', gap:'10px' }}>🏃 AI Loop Generator</h3>
         <div style={{ marginBottom: '20px' }}>
           <label style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '14px', fontWeight: 'bold' }}>
             <span>Target Distance</span>
             <span style={{color: '#fc4c02'}}>{distance} km</span>
           </label>
-          <input 
-            type="range" min="1" max="21" step="0.5" value={distance}
-            onChange={(e) => setDistance(e.target.value)}
-            style={{ width: '100%', cursor: 'pointer', accentColor: '#fc4c02' }}
-          />
+          <input type="range" min="1" max="21" step="0.5" value={distance} onChange={(e) => setDistance(e.target.value)} style={{ width: '100%', cursor: 'pointer', accentColor: '#fc4c02' }} />
         </div>
-
-        <button 
-            onClick={generateAiLoop}
-            disabled={isGenerating}
-            style={{ width: '100%', padding: '12px', background: isGenerating ? '#555' : '#fc4c02', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: isGenerating ? 'wait' : 'pointer' }}
-        >
+        <button onClick={generateAiLoop} disabled={isGenerating} style={{ width: '100%', padding: '12px', background: isGenerating ? '#555' : '#fc4c02', color: 'white', border: 'none', borderRadius: '8px', fontSize: '16px', fontWeight: 'bold', cursor: isGenerating ? 'wait' : 'pointer' }}>
           {isGenerating ? 'AI Designing...' : 'Generate AI Loop'}
         </button>
-
         {statusMsg && <div style={{marginTop:'10px', color:'#aaa', fontSize:'12px', textAlign:'center', fontStyle:'italic'}}>{statusMsg}</div>}
-
-        {/* STATS & DOWNLOAD */}
         {routeStats && (
           <div style={{ marginTop:'20px', paddingTop: '15px', borderTop: '1px solid #444' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', textAlign: 'center', marginBottom: '15px' }}>
@@ -287,43 +271,16 @@ const MapComponent = () => {
           </div>
         )}
       </div>
-
       <MapContainer center={position} zoom={13} style={{ height: "100vh", width: "100vw" }}>
         <TileLayer attribution='&copy; OSM' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
         <RecenterMap center={position} />
-        
         <Marker position={position} icon={DefaultIcon}><Popup>Start</Popup></Marker>
-
-        {routeCoordinates.length > 0 && (
-            <Polyline 
-                positions={routeCoordinates} 
-                color="#fc4c02" 
-                weight={6} 
-                opacity={0.8} 
-                eventHandlers={{ mousemove: (e) => setHoverPos(e.latlng) }}
-            />
-        )}
-
-        {hoverPos && (
-            <Marker position={hoverPos} icon={GhostIcon} draggable={true} eventHandlers={{ dragend: handleGhostDragEnd }} />
-        )}
-
+        {routeCoordinates.length > 0 && <Polyline positions={routeCoordinates} color="#fc4c02" weight={6} opacity={0.8} eventHandlers={{ mousemove: (e) => setHoverPos(e.latlng) }} />}
+        {hoverPos && <Marker position={hoverPos} icon={GhostIcon} draggable={true} eventHandlers={{ dragend: handleGhostDragEnd }} />}
         {waypoints.map((wp, index) => {
             if (index === 0 || index === waypoints.length - 1) return null;
-            return (
-                <Marker 
-                    key={index}
-                    position={[wp[1], wp[0]]}
-                    draggable={true}
-                    icon={DragIcon}
-                    eventHandlers={{
-                        dragend: (e) => handleWaypointDrag(index, e.target.getLatLng()),
-                        click: (e) => handleWaypointClick(index)
-                    }}
-                />
-            )
+            return <Marker key={index} position={[wp[1], wp[0]]} draggable={true} icon={DragIcon} eventHandlers={{ dragend: (e) => handleWaypointDrag(index, e.target.getLatLng()), click: (e) => handleWaypointClick(index) }} />;
         })}
-
       </MapContainer>
     </div>
   );
